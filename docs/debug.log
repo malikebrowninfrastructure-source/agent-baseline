@@ -1,0 +1,154 @@
+# Debug Log — AI Agent Baseline v0.1
+
+## Overview
+
+This log captures key errors encountered during implementation and how they were resolved.
+
+---
+
+## 1. Import Errors (Schemas)
+
+### Issue
+  cannot import name ‘ExecutionSchema’
+
+  ### Cause
+- Class not defined or mismatched filename
+- Incorrect `__init__.py` exports
+
+### Fix
+- Created `ExecutionSchema` in `schemas/execution_schema.py`
+- Updated `schemas/__init__.py`
+- Cleared `__pycache__`
+
+---
+
+## 2. Package Structure Issues
+
+### Issue
+Modules not recognized (e.g., workflows, schemas)
+
+### Cause
+- Missing `__init__.py`
+
+### Fix
+- Added `__init__.py` to all packages:
+  - schemas/
+  - runtime/
+  - workflows/
+  - tools/
+
+---
+
+## 3. Circular Imports
+
+### Issue
+Runtime importing schemas while schemas indirectly referenced runtime
+
+### Fix
+- Enforced one-directional dependency:
+  - schemas → standalone
+  - runtime → imports schemas
+  - workflows → imports runtime
+
+---
+
+## 4. Schema Field Mismatches
+
+### Issue
+Fields used in workflow did not match schema definitions
+
+Examples:
+- `tools` vs `tools_used`
+- `status` vs `completion_status`
+
+### Fix
+- Standardized field names across:
+  - schemas
+  - workflow nodes
+
+---
+
+## 5. Enum vs String Errors
+
+### Issue
+Passing raw strings instead of enum values
+
+Example:
+    “low” instead of RiskLevel.LOW
+### Fix
+- Replaced all string values with enum members
+
+---
+
+## 6. Pydantic Serialization Errors
+
+### Issue
+    ‘dict’ object has no attribute ‘model_dump_json’
+### Cause
+Mixing dicts and Pydantic models
+
+### Fix
+- Implemented custom `to_jsonable()` function
+
+---
+
+## 7. JSON Serialization Failure
+oh
+### Issue
+  Object of type module is not JSONo serializable
+### Cause
+Non-serializable object passed to `json.dumps`
+
+### Fix
+- Added recursive serialization handler
+
+---
+
+## 8. Wrong JSON Module
+
+### Issue
+pydantic.json has no attribute dumps
+### Cause
+Imported `json` from Pydantic instead of standard library
+
+### Fix
+    import json  # standard library
+---
+
+## 9. Tool Function Argument Mismatch
+
+### Issue
+  unexpected keyword argument ‘content’
+  ### Cause
+Mismatch between:
+- `write_json_file(payload=...)`
+- called with `content=...`
+
+### Fix
+- Corrected argument name to `payload`
+
+---
+
+## 10. File Persistence Validation
+
+### Issue
+Artifacts not actually written
+
+### Fix
+- Implemented:
+  - `write_text_file`
+  - `write_json_file`
+- Verified via filesystem inspection
+
+---
+
+## Final Outcome
+
+All major blocking issues resolved.
+
+System successfully:
+- executes workflow
+- generates artifacts
+- persists structured output
+
+    
