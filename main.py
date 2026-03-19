@@ -1,24 +1,10 @@
-import json
+from uuid import uuid4
 from tools import write_json_file
-from enum import Enum
-from pydantic import BaseModel
 
 from workflows import build_graph
 from runtime import RunState
 from schemas.task_schema import TaskSchema
 from schemas.common_types import RiskLevel, WorkflowStage
-
-
-def to_jsonable(obj):
-	if isinstance(obj, BaseModel):
-		return obj.model_dump()
-	if isinstance(obj, Enum):
-		return obj.value
-	if isinstance(obj, dict):
-		return {k: to_jsonable(v) for k, v in obj.items()}
-	if isinstance(obj, list):
-		return [to_jsonable(v) for v in obj]
-	return obj
 
 
 def main():
@@ -37,7 +23,7 @@ def main():
 	)
 
 	initial_state = RunState(
-		run_id="run-001",
+		run_id=f"run-{uuid4().hex[:8]}",
 		current_stage=WorkflowStage.INTAKE,
 		task=task,
 	)
@@ -45,16 +31,16 @@ def main():
 	graph = build_graph()
 	result = graph.invoke(initial_state)
 	
-	json_result = to_jsonable(result)
+	json_result = RunState.model_validate(result).to_jsonable()
 	output_path = write_json_file(
 		run_id=initial_state.run_id,
 		filename="result.json",
 		payload=json_result
 	)
 
-	print("=== FINAL RESULT ===")
-	print(json.dumps(to_jsonable(result), indent=2))
-	print(f"\nSaved run result to: {output_path}")
+	for path in json_result.get("execution", {}).get("artifacts_created", []):
+		print(f"wrote artifact to {path}")
+	print(f"saved run result to {output_path}")
 
 if __name__ == "__main__":
 	main()
