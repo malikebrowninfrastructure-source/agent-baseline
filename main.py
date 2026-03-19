@@ -1,5 +1,4 @@
 import json
-from unittest import result
 from tools import write_json_file
 from enum import Enum
 from pydantic import BaseModel
