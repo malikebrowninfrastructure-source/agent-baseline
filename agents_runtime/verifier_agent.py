@@ -1,17 +1,27 @@
 from __future__ import annotations
 
+from models.base import BaseModelAdapter, ModelRequest
+from models.router import get_model_for_role
 from schemas.task_schema import TaskSchema
 from schemas.plan_schema import PlanSchema
 from schemas.execution_schema import ExecutionSchema
 from schemas.verification_schema import VerificationSchema
 from schemas.common_types import CompletionStatus, Verdict
+from tools.registry import TOOL_CLASS_MAP
+
+
+# Reverse map: concrete tool name → tool class name
+# e.g. "write_text_file" → "file_tools"
+_TOOL_TO_CLASS: dict[str, str] = {
+    tool: class_name
+    for class_name, tools in TOOL_CLASS_MAP.items()
+    for tool in tools
+}
 
 
 class VerifierAgent:
-    """
-    Reviews task, plan, and execution outputs.
-    Issues an explicit verdict. Never passes incomplete or policy-violating work silently.
-    """
+    def __init__(self, model: BaseModelAdapter | None = None) -> None:
+        self._model = model or get_model_for_role("verifier")
 
     def run(
         self,
@@ -25,8 +35,7 @@ class VerifierAgent:
         # Check completion status
         if execution.completion_status == CompletionStatus.FAILED:
             issues.append("Execution failed — no artifacts were produced")
-
-        if execution.completion_status == CompletionStatus.PARTIAL:
+        elif execution.completion_status == CompletionStatus.PARTIAL:
             issues.append("Execution partially completed — some artifacts may be missing")
 
         # Check all expected artifacts were produced
@@ -43,15 +52,21 @@ class VerifierAgent:
         for deviation in execution.deviations_from_plan:
             issues.append(f"Deviation from plan: {deviation}")
 
-        # Policy check: tools_used must be subset of task.allowed_tools
-        allowed = set(task.allowed_tools)
+        # Policy check: resolve concrete tool names → class, then check against allowed_tool_classes
+        allowed_classes = set(task.allowed_tools)
         for tool in execution.tools_used:
-            if tool not in allowed:
+            tool_class = _TOOL_TO_CLASS.get(tool)
+            if tool_class is None:
                 policy_violations.append(
-                    f"Tool '{tool}' was used but is not in task.allowed_tools"
+                    f"Tool '{tool}' is not registered in any tool class"
+                )
+            elif tool_class not in allowed_classes:
+                policy_violations.append(
+                    f"Tool '{tool}' belongs to class '{tool_class}' "
+                    f"which is not in task.allowed_tools"
                 )
 
-        # Policy check: artifacts_created must be non-empty if plan expected them
+        # Policy check: plan expected artifacts but none were created
         if plan.expected_artifacts and not execution.artifacts_created:
             policy_violations.append(
                 "Plan declared expected artifacts but none were created"
