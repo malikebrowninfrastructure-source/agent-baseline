@@ -1,10 +1,16 @@
+from dotenv import load_dotenv
+load_dotenv(override=True)
 from uuid import uuid4
 from tools import write_json_file
+from tools.trace_tools import write_trace_file, write_trace_md
 
 from workflows import build_graph
 from runtime import RunState
+from runtime.tracing import RunTracer, set_tracer
 from schemas.task_schema import TaskSchema
+from schemas.policy_schema import RunPolicy
 from schemas.common_types import RiskLevel, WorkflowStage
+from execution_policy import set_policy, enforce_approval
 
 
 def main():
@@ -28,19 +34,36 @@ def main():
 		task=task,
 	)
 
+	policy = RunPolicy(
+		allowed_backends=["local", "cloud"],
+		denied_tools=[],
+		allow_cloud_fallback=True,
+		require_approval_above=RiskLevel.HIGH,
+		approved=False,
+	)
+	set_policy(policy)
+	enforce_approval(task=initial_state.task, policy=policy)
+
+	tracer = RunTracer(run_id=initial_state.run_id, started_at=initial_state.started_at)
+	set_tracer(tracer)
+
 	graph = build_graph()
 	result = graph.invoke(initial_state)
-	
+
 	json_result = RunState.model_validate(result).to_jsonable()
 	output_path = write_json_file(
 		run_id=initial_state.run_id,
 		filename="result.json",
 		payload=json_result
 	)
+	trace_json_path = write_trace_file(run_id=initial_state.run_id, tracer=tracer)
+	trace_md_path = write_trace_md(run_id=initial_state.run_id, tracer=tracer)
 
 	for path in json_result.get("execution", {}).get("artifacts_created", []):
 		print(f"wrote artifact to {path}")
 	print(f"saved run result to {output_path}")
+	print(f"saved trace json to {trace_json_path}")
+	print(f"saved trace markdown to {trace_md_path}")
 
 if __name__ == "__main__":
 	main()

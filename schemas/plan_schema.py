@@ -8,6 +8,8 @@ from .common_types import BoundedStr, NonBlankStr, ToolName
 
 
 class PlanSchema(BaseModel):
+    backend: str = Field(..., description="Model backend used: local or cloud")
+    model_used: str = Field(..., description="Model name used for planning")
     task_summary: BoundedStr = Field(
         ...,
         description="Planner summary of the task",

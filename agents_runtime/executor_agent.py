@@ -1,117 +1,136 @@
-from __future__ import annotations
+import time
 
-from models.base import BaseModelAdapter, ModelRequest
-from models.router import get_model_for_role
-from schemas.task_schema import TaskSchema
-from schemas.plan_schema import PlanSchema
+from runtime.state import RunState
+from runtime.logging import utc_now_iso
+from runtime.tracing import get_tracer
 from schemas.execution_schema import ExecutionSchema
 from schemas.common_types import CompletionStatus
-from tools.registry import execute_tool
+from models import get_model_adapter, ModelRequest
+from routing_policy import route_role, estimate_prompt_size
+from execution_policy import enforce_backend_allowed, enforce_cloud_fallback
+from tools import execute_tool, get_backend_for_tool
+from config import EXECUTOR_MODEL, CLOUD_MODEL
 
 
-class ExecutorAgent:
-    def __init__(self, model: BaseModelAdapter | None = None) -> None:
-        self._model = model or get_model_for_role("executor")
+def run_executor(state: RunState) -> ExecutionSchema:
+    task = state.task
 
-    def run(self, task: TaskSchema, plan: PlanSchema, run_id: str) -> ExecutionSchema:
-        generated = self._model.generate(
-            ModelRequest(
-                role="executor",
-                system_prompt=(
-                    "You are the execution component in a schema-driven agent system. "
-                    "Produce operationally useful implementation content."
-                ),
-                user_prompt=(
-                    f"Task title: {task.title}\n"
-                    f"Objective: {task.objective}\n"
-                    f"Context: {task.context}\n"
-                    f"Constraints: {list(task.constraints)}\n"
-                    f"Expected output: {task.expected_output}"
-                ),
-            )
+    user_prompt = (
+        f"Task title: {task.title}\n"
+        f"Objective: {task.objective}\n"
+        f"Context: {task.context}\n"
+        f"Constraints: {task.constraints}\n"
+        f"Expected output: {task.expected_output}"
+    )
+
+    decision = route_role(
+        role="executor",
+        risk_level=task.risk_level.value,
+        retry_count=state.retry_count,
+        token_estimate=estimate_prompt_size(user_prompt),
+        externally_visible=False,
+    )
+
+    enforce_backend_allowed("executor", decision.backend)
+
+    model = get_model_adapter(decision.backend, "executor")
+    model_request = ModelRequest(
+        role="executor",
+        system_prompt=(
+            "You are the execution component in a schema-driven agent system. "
+            "Produce operationally useful implementation content."
+        ),
+        user_prompt=user_prompt,
+    )
+    actual_backend = decision.backend
+    _t0 = time.monotonic()
+    _span_started_at = utc_now_iso()
+    _fallback_reason = None
+    try:
+        generated_summary = model.generate(model_request)
+    except RuntimeError as exc:
+        enforce_cloud_fallback("executor", exc)
+        print(f"[executor] local model failed, falling back to cloud. Reason: {exc}")
+        _fallback_reason = str(exc)
+        actual_backend = "cloud"
+        generated_summary = get_model_adapter("cloud", "executor").generate(model_request)
+
+    selected_model = EXECUTOR_MODEL if actual_backend == "local" else CLOUD_MODEL
+
+    tracer = get_tracer()
+    if tracer is not None:
+        tracer.record_model_call(
+            agent_role="executor",
+            started_at=_span_started_at,
+            duration_ms=int((time.monotonic() - _t0) * 1000),
+            requested_backend=decision.backend,
+            actual_backend=actual_backend,
+            model_name=selected_model,
+            prompt_chars=len(model_request.system_prompt) + len(model_request.user_prompt),
+            response_chars=len(generated_summary),
+            fallback_reason=_fallback_reason,
         )
+    tool_backend = get_backend_for_tool("write_text_file")
 
-        actions_taken: list[str] = []
-        artifacts_created: list[str] = []
-        tools_used: list[str] = []
-        errors: list[str] = []
-        deviations: list[str] = []
+    report_content = f"""# Baseline Engineering Report
 
-        for step in plan.execution_steps:
-            actions_taken.append(f"Executed step: {step}")
+## Title
+{task.title}
 
-        for artifact_name in plan.expected_artifacts:
-            content = self._build_artifact(task, plan, generated)
-            try:
-                artifact_path = execute_tool(
-                    "write_text_file",
-                    allowed_tool_classes=list(task.allowed_tools),
-                    run_id=run_id,
-                    filename=artifact_name,
-                    content=content,
-                )
-                artifacts_created.append(str(artifact_path))
-                actions_taken.append(f"Wrote artifact: {artifact_name}")
-                if "write_text_file" not in tools_used:
-                    tools_used.append("write_text_file")
-            except PermissionError as e:
-                errors.append(f"Tool permission denied for '{artifact_name}': {e}")
-                deviations.append(f"Could not produce '{artifact_name}' — tool not permitted")
-            except Exception as e:
-                errors.append(f"Failed to write '{artifact_name}': {e}")
-                deviations.append(f"Artifact '{artifact_name}' not produced due to error")
-
-        if errors and not artifacts_created:
-            status = CompletionStatus.FAILED
-        elif errors and artifacts_created:
-            status = CompletionStatus.PARTIAL
-        else:
-            status = CompletionStatus.COMPLETED
-
-        return ExecutionSchema(
-            actions_taken=actions_taken,
-            tools_used=tools_used,
-            artifacts_created=artifacts_created,
-            errors=errors,
-            deviations_from_plan=deviations,
-            completion_status=status,
-        )
-
-    def _build_artifact(self, task: TaskSchema, plan: PlanSchema, model_output: str) -> str:
-        constraints = "\n".join(f"- {c}" for c in task.constraints) or "None"
-        steps = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(plan.execution_steps))
-        risks = "\n".join(f"- {r}" for r in plan.risks) or "None"
-        tools = "\n".join(f"- {t}" for t in task.allowed_tools) or "None"
-
-        return f"""# Execution Artifact: {task.title}
-
-## Task
-
-**ID:** {task.task_id}
-**Objective:** {task.objective}
-**Risk Level:** {task.risk_level.value}
+## Objective
+{task.objective}
 
 ## Context
-
 {task.context}
 
 ## Constraints
+{chr(10).join(f"- {c}" for c in task.constraints)}
 
-{constraints}
+## Model Routing Decision
+Backend: {decision.backend}
+Reason: {decision.reason}
 
-## Execution Steps
+## Model Name
+{selected_model}
 
-{steps}
-
-## Allowed Tools
-
-{tools}
-
-## Risks
-
-{risks}
+## Execution Summary
+This artifact was generated by the baseline LangGraph workflow.
 
 ## Model Output
+{generated_summary}
 
-{model_output}
+## Approved Tools
+{chr(10).join(f"- {t}" for t in task.allowed_tools)}
 """
+
+    artifact_path = execute_tool(
+        "write_text_file",
+        allowed_tool_classes=task.allowed_tools,
+        run_id=state.run_id,
+        filename=task.expected_output,
+        content=report_content,
+    )
+
+    return ExecutionSchema(
+        backend=actual_backend,
+        model_used=selected_model,
+        actions_taken=[
+            "Reviewed task and plan",
+            f"Selected model backend '{actual_backend}'",
+            f"Selected tool backend '{tool_backend}' for 'write_text_file'",
+            "Generated model-backed report content",
+            f"Wrote artifact to {artifact_path}",
+        ],
+        tools_used=["write_text_file"],
+        artifacts_created=[artifact_path],
+        errors=[],
+        deviations_from_plan=[],
+        completion_status=CompletionStatus.COMPLETED,
+    )
+
+
+class ExecutorAgent:
+    def run(self, task, plan, run_id):
+        from types import SimpleNamespace
+        state = SimpleNamespace(task=task, plan=plan, run_id=run_id, retry_count=0)
+        return run_executor(state)
