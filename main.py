@@ -10,7 +10,7 @@ from runtime.tracing import RunTracer, set_tracer
 from schemas.task_schema import TaskSchema
 from schemas.policy_schema import RunPolicy
 from schemas.common_types import RiskLevel, WorkflowStage
-from execution_policy import set_policy, enforce_approval
+from enforce_policy import PolicyEnforcer, PolicyViolationError, set_enforcer, enforce_approval
 
 
 def main():
@@ -28,27 +28,37 @@ def main():
 		risk_level=RiskLevel.LOW,
 	)
 
-	initial_state = RunState(
-		run_id=f"run-{uuid4().hex[:8]}",
-		current_stage=WorkflowStage.INTAKE,
-		task=task,
-	)
-
 	policy = RunPolicy(
 		allowed_backends=["local", "cloud"],
 		denied_tools=[],
 		allow_cloud_fallback=True,
+		allow_shell_execution=False,
 		require_approval_above=RiskLevel.HIGH,
 		approved=False,
 	)
-	set_policy(policy)
-	enforce_approval(task=initial_state.task, policy=policy)
+
+	initial_state = RunState(
+		run_id=f"run-{uuid4().hex[:8]}",
+		current_stage=WorkflowStage.INTAKE,
+		task=task,
+		policy=policy,
+	)
+
+	enforcer = PolicyEnforcer(policy)
+	set_enforcer(enforcer)
+	enforce_approval(task=initial_state.task)
 
 	tracer = RunTracer(run_id=initial_state.run_id, started_at=initial_state.started_at)
 	set_tracer(tracer)
 
 	graph = build_graph()
-	result = graph.invoke(initial_state)
+	try:
+		result = graph.invoke(initial_state)
+	except PolicyViolationError as exc:
+		print(f"\n[POLICY VIOLATION] Run halted: {exc}")
+		write_trace_file(run_id=initial_state.run_id, tracer=tracer)
+		write_trace_md(run_id=initial_state.run_id, tracer=tracer)
+		raise
 
 	json_result = RunState.model_validate(result).to_jsonable()
 	output_path = write_json_file(
