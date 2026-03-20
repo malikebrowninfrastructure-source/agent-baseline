@@ -9,6 +9,7 @@ from schemas.task_schema import TaskSchema
 from schemas.plan_schema import PlanSchema
 from schemas.execution_schema import ExecutionSchema
 from schemas.verification_schema import VerificationSchema
+from schemas.policy_schema import RunPolicy
 from schemas.common_types import WorkflowStage, FinalStatus
 
 
@@ -19,6 +20,7 @@ class RunState(BaseModel):
     run_id: str = Field(..., description="Unique identifier for the workflow run")
     current_stage: WorkflowStage = Field(..., description="Current workflow stage")
     task: TaskSchema = Field(..., description="Input task contract")
+    policy: Optional[RunPolicy] = Field(default=None, description="Execution policy governing this run")
 
     plan: Optional[PlanSchema] = Field(default=None, description="Planner output")
     execution: Optional[ExecutionSchema] = Field(default=None, description="Executor output")
