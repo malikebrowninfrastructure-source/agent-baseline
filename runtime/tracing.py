@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Dict, Generator, List, Optional
 from uuid import uuid4
 
 from runtime.logging import utc_now_iso
+from runtime.realtime import emit_span, init_run_stream
 
 
 _current_tracer: ContextVar[Optional[RunTracer]] = ContextVar(
@@ -31,6 +31,7 @@ class RunTracer:
         self.run_id = run_id
         self.started_at = started_at
         self.spans: List[Dict[str, Any]] = []
+        init_run_stream(run_id, started_at)
 
     def record_model_call(
         self,
@@ -63,6 +64,7 @@ class RunTracer:
             "fallback_reason": fallback_reason,
             "error": error,
         })
+        emit_span(self.run_id, self.spans[-1])
         return span_id
 
     def record_tool_call(
@@ -85,6 +87,7 @@ class RunTracer:
             "duration_ms": duration_ms,
             "error": error,
         })
+        emit_span(self.run_id, self.spans[-1])
         return span_id
 
     def record_policy_violation(
@@ -104,6 +107,7 @@ class RunTracer:
             "context": context,
             "timestamp": utc_now_iso(),
         })
+        emit_span(self.run_id, self.spans[-1])
         return span_id
 
     def record_approval_request(
@@ -123,6 +127,7 @@ class RunTracer:
             "artifact_path": artifact_path,
             "timestamp": utc_now_iso(),
         })
+        emit_span(self.run_id, self.spans[-1])
         return span_id
 
     @contextmanager

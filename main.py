@@ -68,6 +68,11 @@ def main():
 		print(f"\n[POLICY VIOLATION] Run halted: {exc}")
 		write_trace_file(run_id=initial_state.run_id, tracer=tracer)
 		write_trace_md(run_id=initial_state.run_id, tracer=tracer)
+		write_json_file(initial_state.run_id, "result.json", {
+			"run_id": initial_state.run_id,
+			"final_status": "failed",
+			"final_summary": f"Policy violation: {exc}",
+		})
 		raise
 
 	json_result = RunState.model_validate(result).to_jsonable()
