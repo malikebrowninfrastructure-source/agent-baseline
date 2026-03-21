@@ -36,6 +36,7 @@ def main():
 		allow_cloud_fallback=True,
 		allow_shell_execution=False,
 		require_approval_above=RiskLevel.HIGH,
+		require_pre_execution_review=True,
 		approved=False,
 	)
 
