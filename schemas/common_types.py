@@ -49,6 +49,7 @@ class Verdict(str, Enum):
 class WorkflowStage(str, Enum):
     INTAKE = "intake"
     PLANNING = "planning"
+    AWAITING_APPROVAL = "awaiting_approval"
     EXECUTION = "execution"
     VERIFICATION = "verification"
     FINALIZATION = "finalization"

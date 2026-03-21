@@ -88,6 +88,21 @@ class RunTracer:
             "timestamp": utc_now_iso(),
         })
 
+    def record_approval_request(
+        self,
+        *,
+        checkpoint: str,
+        reason: str,
+        artifact_path: str,
+    ) -> None:
+        self.spans.append({
+            "span_type": "approval_request",
+            "checkpoint": checkpoint,
+            "reason": reason,
+            "artifact_path": artifact_path,
+            "timestamp": utc_now_iso(),
+        })
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "run_id": self.run_id,

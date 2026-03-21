@@ -49,6 +49,14 @@ class RunPolicy(BaseModel):
     )
 
     # --- Approval gate ---
+    require_pre_execution_review: bool = Field(
+        default=False,
+        description=(
+            "If True, the run pauses after planning for operator review before execution begins. "
+            "The plan is written to approval_request.json for inspection. "
+            "Run resume.py to approve or reject."
+        ),
+    )
     require_approval_above: Optional[RiskLevel] = Field(
         default=RiskLevel.MEDIUM,
         description=(

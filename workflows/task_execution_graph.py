@@ -9,6 +9,9 @@ from schemas.common_types import Verdict, WorkflowStage, FinalStatus
 
 
 def plan_node(state: RunState) -> dict:
+    if state.plan is not None:
+        # Already planned — skip on resume after approval checkpoint
+        return {}
     plan = PlannerAgent().run(task=state.task)
     events = list(state.events)
     events.append(make_event("planning", "Planner completed successfully"))
@@ -17,6 +20,23 @@ def plan_node(state: RunState) -> dict:
         "plan": plan,
         "events": events,
     }
+
+
+def approval_check_node(state: RunState) -> dict:
+    policy = state.policy
+    if policy is not None and policy.require_pre_execution_review and not policy.approved:
+        from runtime.approval import request_approval
+        request_approval(
+            run_id=state.run_id,
+            checkpoint="pre_execution_review",
+            reason=(
+                "Pre-execution review required by policy. "
+                "Inspect state_snapshot.plan in the artifact, then set decision to "
+                "'approved' or 'rejected' and run: python resume.py <artifact_path>"
+            ),
+            state_snapshot=state.to_jsonable(),
+        )
+    return {}
 
 
 def execute_node(state: RunState) -> dict:
@@ -146,12 +166,14 @@ def build_graph():
     graph = StateGraph(RunState)
 
     graph.add_node("plan", plan_node)
+    graph.add_node("approval_check", approval_check_node)
     graph.add_node("execute", execute_node)
     graph.add_node("verify", verify_node)
     graph.add_node("finalize", finalize_node)
 
     graph.add_edge(START, "plan")
-    graph.add_edge("plan", "execute")
+    graph.add_edge("plan", "approval_check")
+    graph.add_edge("approval_check", "execute")
     graph.add_edge("execute", "verify")
     graph.add_edge("verify", "finalize")
     graph.add_conditional_edges(

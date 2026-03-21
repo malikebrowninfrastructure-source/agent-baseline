@@ -11,6 +11,7 @@ from schemas.task_schema import TaskSchema
 from schemas.policy_schema import RunPolicy
 from schemas.common_types import RiskLevel, WorkflowStage
 from enforce_policy import PolicyEnforcer, PolicyViolationError, set_enforcer, enforce_approval
+from runtime.approval import ApprovalRequiredError
 
 
 def main():
@@ -54,6 +55,14 @@ def main():
 	graph = build_graph()
 	try:
 		result = graph.invoke(initial_state)
+	except ApprovalRequiredError as exc:
+		print(f"\n[AWAITING APPROVAL] Run paused at checkpoint '{exc.checkpoint}'")
+		print(f"  Artifact : {exc.artifact_path}")
+		print(f"  Next step: edit 'decision' to 'approved' or 'rejected', then run:")
+		print(f"             python resume.py {exc.artifact_path}")
+		write_trace_file(run_id=initial_state.run_id, tracer=tracer)
+		write_trace_md(run_id=initial_state.run_id, tracer=tracer)
+		return
 	except PolicyViolationError as exc:
 		print(f"\n[POLICY VIOLATION] Run halted: {exc}")
 		write_trace_file(run_id=initial_state.run_id, tracer=tracer)

@@ -17,6 +17,7 @@ def write_trace_md(run_id: str, tracer: RunTracer) -> str:
     model_spans = [s for s in spans if s["span_type"] == "model_call"]
     tool_spans = [s for s in spans if s["span_type"] == "tool_call"]
     violation_spans = [s for s in spans if s["span_type"] == "policy_violation"]
+    approval_spans = [s for s in spans if s["span_type"] == "approval_request"]
     fallback_spans = [s for s in model_spans if s.get("fallback_occurred")]
     error_spans = [s for s in spans if s.get("error")]
 
@@ -24,12 +25,13 @@ def write_trace_md(run_id: str, tracer: RunTracer) -> str:
 
     # Header
     violation_badge = f" | **{len(violation_spans)} POLICY VIOLATION(S)**" if violation_spans else ""
+    approval_badge = f" | **{len(approval_spans)} AWAITING APPROVAL**" if approval_spans else ""
 
     lines += [
         f"# Run Trace: {tracer.run_id}",
         "",
         f"**Started:** {tracer.started_at}",
-        f"**Spans:** {len(spans)} total ({len(model_spans)} model calls, {len(tool_spans)} tool calls){violation_badge}",
+        f"**Spans:** {len(spans)} total ({len(model_spans)} model calls, {len(tool_spans)} tool calls){violation_badge}{approval_badge}",
         "",
         "---",
         "",
@@ -59,10 +61,15 @@ def write_trace_md(run_id: str, tracer: RunTracer) -> str:
                 f"| — | {span['duration_ms']} ms | — "
                 f"| {'YES' if span['error'] else '—'} |"
             )
-        else:  # policy_violation
+        elif span["span_type"] == "policy_violation":
             lines.append(
                 f"| {i} | **policy_violation** | {span['violation_type']} | — "
                 f"| — | — | — | BLOCKED |"
+            )
+        else:  # approval_request
+            lines.append(
+                f"| {i} | **approval_request** | {span['checkpoint']} | — "
+                f"| — | — | — | PAUSED |"
             )
     lines += ["", "---", ""]
 
@@ -111,6 +118,21 @@ def write_trace_md(run_id: str, tracer: RunTracer) -> str:
             detail = span["detail"].replace("|", "\\|")
             lines.append(
                 f"| {i} | `{span['violation_type']}` | {span['context']} | {detail} |"
+            )
+        lines += ["", "---", ""]
+
+    # Approval checkpoints (only if any occurred)
+    if approval_spans:
+        lines += [
+            "## Approval Checkpoints",
+            "",
+            "| # | Checkpoint | Reason | Artifact |",
+            "|---|------------|--------|---------|",
+        ]
+        for i, span in enumerate(approval_spans, start=1):
+            reason = span["reason"].replace("|", "\\|")
+            lines.append(
+                f"| {i} | `{span['checkpoint']}` | {reason} | `{span['artifact_path']}` |"
             )
         lines += ["", "---", ""]
 
