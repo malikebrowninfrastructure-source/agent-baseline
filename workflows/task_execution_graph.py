@@ -3,12 +3,14 @@ from __future__ import annotations
 from langgraph.graph import StateGraph, START, END
 
 from agents_runtime import PlannerAgent, ExecutorAgent, VerifierAgent
+from runtime.realtime import write_live_status
 from runtime.state import RunState
 from runtime.logging import utc_now_iso, make_event
 from schemas.common_types import Verdict, WorkflowStage, FinalStatus
 
 
 def plan_node(state: RunState) -> dict:
+    write_live_status(state.run_id, "planning")
     if state.plan is not None:
         # Already planned — skip on resume after approval checkpoint
         return {}
@@ -23,6 +25,7 @@ def plan_node(state: RunState) -> dict:
 
 
 def approval_check_node(state: RunState) -> dict:
+    write_live_status(state.run_id, "awaiting_approval")
     policy = state.policy
     if policy is not None and policy.require_pre_execution_review and not policy.approved:
         from runtime.approval import request_approval
@@ -40,6 +43,7 @@ def approval_check_node(state: RunState) -> dict:
 
 
 def execute_node(state: RunState) -> dict:
+    write_live_status(state.run_id, "execution")
     execution = ExecutorAgent().run(
         task=state.task,
         plan=state.plan,
@@ -58,6 +62,7 @@ def execute_node(state: RunState) -> dict:
 
 
 def verify_node(state: RunState) -> dict:
+    write_live_status(state.run_id, "verification")
     if state.execution is None:
         raise ValueError("verify_node called without execution output in state")
 
@@ -81,6 +86,7 @@ def verify_node(state: RunState) -> dict:
 
 
 def finalize_node(state: RunState) -> dict:
+    write_live_status(state.run_id, "finalization")
     verification = state.verification
     events = list(state.events)
 
