@@ -2,6 +2,19 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from langsmith import traceable
+
+
+@traceable(run_type="chain", name="approval_checkpoint")
+def _emit_approval_event(run_id: str, checkpoint: str, reason: str, artifact_path: str) -> dict:
+    """Emits a named LangSmith span for an approval checkpoint before the run is paused."""
+    return {
+        "run_id": run_id,
+        "checkpoint": checkpoint,
+        "reason": reason,
+        "artifact_path": artifact_path,
+    }
+
 
 class ApprovalRequiredError(Exception):
     """
@@ -62,5 +75,12 @@ def request_approval(
             reason=reason,
             artifact_path=artifact_path,
         )
+
+    _emit_approval_event(
+        run_id=run_id,
+        checkpoint=checkpoint,
+        reason=reason,
+        artifact_path=artifact_path,
+    )
 
     raise ApprovalRequiredError(run_id=run_id, checkpoint=checkpoint, artifact_path=artifact_path)

@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
+from uuid import uuid4
 
 from runtime.logging import utc_now_iso
 
 
 _current_tracer: ContextVar[Optional[RunTracer]] = ContextVar(
     "current_tracer", default=None
+)
+
+_current_span_id: ContextVar[Optional[str]] = ContextVar(
+    "current_span_id", default=None
 )
 
 
@@ -39,8 +45,11 @@ class RunTracer:
         response_chars: int,
         fallback_reason: Optional[str] = None,
         error: Optional[str] = None,
-    ) -> None:
+    ) -> str:
+        span_id = uuid4().hex[:8]
         self.spans.append({
+            "span_id": span_id,
+            "parent_span_id": _current_span_id.get(),
             "span_type": "model_call",
             "agent_role": agent_role,
             "started_at": started_at,
@@ -54,6 +63,7 @@ class RunTracer:
             "fallback_reason": fallback_reason,
             "error": error,
         })
+        return span_id
 
     def record_tool_call(
         self,
@@ -63,8 +73,11 @@ class RunTracer:
         started_at: str,
         duration_ms: int,
         error: Optional[str] = None,
-    ) -> None:
+    ) -> str:
+        span_id = uuid4().hex[:8]
         self.spans.append({
+            "span_id": span_id,
+            "parent_span_id": _current_span_id.get(),
             "span_type": "tool_call",
             "tool_name": tool_name,
             "backend": backend,
@@ -72,6 +85,7 @@ class RunTracer:
             "duration_ms": duration_ms,
             "error": error,
         })
+        return span_id
 
     def record_policy_violation(
         self,
@@ -79,14 +93,18 @@ class RunTracer:
         violation_type: str,
         detail: str,
         context: str,
-    ) -> None:
+    ) -> str:
+        span_id = uuid4().hex[:8]
         self.spans.append({
+            "span_id": span_id,
+            "parent_span_id": _current_span_id.get(),
             "span_type": "policy_violation",
             "violation_type": violation_type,
             "detail": detail,
             "context": context,
             "timestamp": utc_now_iso(),
         })
+        return span_id
 
     def record_approval_request(
         self,
@@ -94,14 +112,27 @@ class RunTracer:
         checkpoint: str,
         reason: str,
         artifact_path: str,
-    ) -> None:
+    ) -> str:
+        span_id = uuid4().hex[:8]
         self.spans.append({
+            "span_id": span_id,
+            "parent_span_id": _current_span_id.get(),
             "span_type": "approval_request",
             "checkpoint": checkpoint,
             "reason": reason,
             "artifact_path": artifact_path,
             "timestamp": utc_now_iso(),
         })
+        return span_id
+
+    @contextmanager
+    def span_context(self, span_id: str) -> Generator[None, None, None]:
+        """Set span_id as the ambient parent for all record_* calls within this block."""
+        token = _current_span_id.set(span_id)
+        try:
+            yield
+        finally:
+            _current_span_id.reset(token)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
