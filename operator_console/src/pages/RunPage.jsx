@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
 import api from "../api";
 
@@ -33,6 +33,28 @@ export default function RunsPage() {
   const [error, setError] = useState(null);
   const [connStatus, setConnStatus] = useState(null);
   const [pendingApprovals, setPendingApprovals] = useState(0);
+  const wasConnected = useRef(false);
+
+  const fetchRuns = useCallback(() => {
+    api.get("/runs")
+      .then(async (res) => {
+        const items = res.data.runs || [];
+        const summaries = await Promise.all(
+          items.map(async (item) => {
+            const s = await api.get(`/runs/${item.run_id}/summary`);
+            return s.data;
+          })
+        );
+        setRuns(summaries);
+      })
+      .catch((err) => setError(err.message));
+  }, []);
+
+  const fetchApprovals = useCallback(() => {
+    api.get("/approvals")
+      .then(r => setPendingApprovals((r.data.approvals || []).length))
+      .catch(() => {});
+  }, []);
 
   // Initial load
   useEffect(() => {
@@ -53,22 +75,25 @@ export default function RunsPage() {
 
   // Pending approvals poll
   useEffect(() => {
-    function fetch() {
-      api.get("/approvals")
-        .then(r => setPendingApprovals((r.data.approvals || []).length))
-        .catch(() => {});
-    }
-    fetch();
-    const id = setInterval(fetch, 5000);
+    fetchApprovals();
+    const id = setInterval(fetchApprovals, 5000);
     return () => clearInterval(id);
-  }, []);
+  }, [fetchApprovals]);
 
   // Global SSE stream
   useEffect(() => {
     if (loading) return;
     const es = new EventSource("http://127.0.0.1:8000/runs/stream");
     setConnStatus("connecting");
-    es.onopen = () => setConnStatus("connected");
+
+    es.onopen = () => {
+      if (wasConnected.current) {
+        fetchRuns();
+        fetchApprovals();
+      }
+      wasConnected.current = true;
+      setConnStatus("connected");
+    };
 
     es.addEventListener("run_created", (e) => {
       const r = JSON.parse(e.data);
@@ -111,9 +136,9 @@ export default function RunsPage() {
       ));
     });
 
-    es.onerror = () => setConnStatus("connecting");
-    return () => { es.close(); setConnStatus(null); };
-  }, [loading]);
+    es.onerror = () => setConnStatus(wasConnected.current ? "reconnecting" : "connecting");
+    return () => { es.close(); setConnStatus(null); wasConnected.current = false; };
+  }, [loading, fetchRuns, fetchApprovals]);
 
   // Derived metrics
   const totalRuns      = runs.length;
@@ -145,15 +170,26 @@ export default function RunsPage() {
           <span style={{
             padding: "3px 10px", borderRadius: "12px", fontSize: "12px",
             fontWeight: "bold", display: "inline-flex", alignItems: "center", gap: "5px",
-            background: connStatus === "connected" ? "#e8f5e9" : "#fff8e1",
-            color:      connStatus === "connected" ? "#2e7d32" : "#f57f17",
-            border:     `1px solid ${connStatus === "connected" ? "#2e7d3244" : "#f57f1744"}`,
+            background: connStatus === "connected" ? "#e8f5e9" : connStatus === "reconnecting" ? "#fce4ec" : "#fff8e1",
+            color:      connStatus === "connected" ? "#2e7d32" : connStatus === "reconnecting" ? "#c62828" : "#f57f17",
+            border:     `1px solid ${connStatus === "connected" ? "#2e7d3244" : connStatus === "reconnecting" ? "#c6282844" : "#f57f1744"}`,
           }}>
             <span className="live-dot">●</span>
-            {connStatus === "connected" ? "live" : "connecting…"}
+            {connStatus === "connected" ? "live" : connStatus === "reconnecting" ? "reconnecting…" : "connecting…"}
           </span>
         )}
       </div>
+
+      {/* Stale data banner */}
+      {connStatus === "reconnecting" && (
+        <div style={{
+          padding: "8px 14px", background: "#fff3e0",
+          border: "1px solid #ffe0b2", borderRadius: "6px",
+          fontSize: "13px", color: "#e65100", marginBottom: "12px",
+        }}>
+          Connection lost — data may be stale. Reconnecting…
+        </div>
+      )}
 
       {/* Metrics strip */}
       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "32px" }}>

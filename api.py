@@ -1,6 +1,6 @@
 import asyncio
 import json
-import sys
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,8 +8,16 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+import state_store
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    state_store.init_db()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,7 +27,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-RUNS_DIR = Path("outputs/runs")
+PROJECT_ROOT = Path(__file__).resolve().parent
+RUNS_DIR = PROJECT_ROOT / "outputs" / "runs"
 
 
 def _load_spans(run_dir: Path) -> list:
@@ -151,34 +160,7 @@ async def stream_runs():
 
 @app.get("/approvals")
 def list_approvals():
-    if not RUNS_DIR.exists():
-        return {"approvals": []}
-    approvals = []
-    for run_dir in sorted(RUNS_DIR.iterdir(), reverse=True):
-        if not run_dir.is_dir():
-            continue
-        artifact = run_dir / "approval_request.json"
-        if not artifact.exists():
-            continue
-        try:
-            data = json.loads(artifact.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if data.get("decision") != "pending":
-            continue
-        task = (data.get("state_snapshot") or {}).get("task") or {}
-        approvals.append({
-            "run_id":         data["run_id"],
-            "approval_id":    data.get("approval_id"),
-            "checkpoint":     data.get("checkpoint"),
-            "reason":         data.get("reason"),
-            "requested_at":   data.get("requested_at"),
-            "artifact_path":  str(artifact),
-            "task_title":     task.get("title"),
-            "task_risk":      task.get("risk_level"),
-            "task_objective": task.get("objective"),
-        })
-    return {"approvals": approvals}
+    return {"approvals": state_store.list_pending_approvals()}
 
 
 @app.post("/approvals/{run_id}/decide")
@@ -204,30 +186,39 @@ async def decide_approval(run_id: str, body: dict = Body(...)):
     data["decided_at"]    = datetime.now(timezone.utc).isoformat()
     artifact.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-    if decision == "approved":
-        await asyncio.create_subprocess_exec(
-            sys.executable, "resume.py", str(artifact),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
+    state_store.resolve_approval(
+        run_id=run_id,
+        decision=decision,
+        decided_at=data["decided_at"],
+        operator_note=data["operator_note"],
+    )
+
+    final_status = "success" if decision == "approved" else "failed"
+    final_summary = (
+        "Approved by operator." if decision == "approved"
+        else f"Rejected by operator. Note: {data['operator_note'] or 'none'}"
+    )
+    state_store.update_run(
+        run_id=run_id,
+        final_status=final_status,
+        final_summary=final_summary,
+        finished_at=data["decided_at"],
+        retry_count=0,
+        escalated=False,
+        total_spans=0,
+        model_calls=0,
+        tool_calls=0,
+        fallbacks=0,
+        policy_violations=0,
+        errors=0,
+    )
 
     return {"status": "ok", "decision": decision}
 
 
 @app.get("/runs")
 def list_runs():
-    if not RUNS_DIR.exists():
-        return {"runs": []}
-    runs = []
-    for run_dir in RUNS_DIR.iterdir():
-        if run_dir.is_dir():
-            summary = "No summary available"
-            result_file = run_dir / "result.json"
-            if result_file.exists():
-                data = json.loads(result_file.read_text(encoding="utf-8"))
-                summary = data.get("final_summary") or "No summary available"
-            runs.append({"run_id": run_dir.name, "summary": summary})
-    return {"runs": runs}
+    return {"runs": state_store.list_runs_db()}
 
 
 @app.get("/runs/{run_id}")
@@ -251,21 +242,10 @@ def get_run_details(run_id: str):
 
 @app.get("/runs/{run_id}/summary")
 def get_run_summary(run_id: str):
-    run_dir = RUNS_DIR / run_id
-    if not run_dir.is_dir():
+    row = state_store.get_run_db(run_id)
+    if not row:
         raise HTTPException(status_code=404, detail="Run not found")
-
-    spans = _load_spans(run_dir)
-
-    return {
-        "run_id": run_id,
-        "total_spans": len(spans),
-        "model_calls": len([s for s in spans if s.get("span_type") == "model_call"]),
-        "tool_calls": len([s for s in spans if s.get("span_type") == "tool_call"]),
-        "policy_violations": len([s for s in spans if s.get("span_type") == "policy_violation"]),
-        "fallbacks": len([s for s in spans if s.get("fallback_occurred") is True]),
-        "errors": [s for s in spans if s.get("error")],
-    }
+    return row
 
 
 @app.get("/runs/{run_id}/spans")

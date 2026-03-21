@@ -63,3 +63,9 @@ def write_live_status(run_id: str, stage: str, started_at: Optional[str] = None)
         }))
     except OSError:
         pass
+
+    try:
+        from state_store import update_run_stage
+        update_run_stage(run_id, stage)
+    except Exception:
+        pass  # DB not yet bootstrapped — file-based SSE still works

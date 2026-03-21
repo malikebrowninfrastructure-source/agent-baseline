@@ -36,6 +36,7 @@ def main() -> None:
         sys.exit(1)
 
     # --- Approved: restore state and re-invoke graph ---
+    import state_store
     from runtime.state import RunState
     from schemas.policy_schema import RunPolicy
     from enforce_policy import PolicyEnforcer, PolicyViolationError, set_enforcer
@@ -50,7 +51,7 @@ def main() -> None:
     if state_data.get("policy"):
         state_data["policy"]["approved"] = True
 
-    resumed_state = RunState.model_validate(state_data)
+    resumed_state = RunState.model_validate(state_data, strict=False)
 
     policy = resumed_state.policy
     if policy is None:
@@ -76,6 +77,18 @@ def main() -> None:
         print(f"\n[POLICY VIOLATION] Run halted: {exc}")
         write_trace_file(run_id=run_id, tracer=tracer)
         write_trace_md(run_id=run_id, tracer=tracer)
+        state_store.update_run(
+            run_id=run_id,
+            final_status="failed",
+            final_summary=f"Policy violation: {exc}",
+            finished_at=None,
+            total_spans=len(tracer.spans),
+            model_calls=sum(1 for s in tracer.spans if s.get("span_type") == "model_call"),
+            tool_calls=sum(1 for s in tracer.spans if s.get("span_type") == "tool_call"),
+            fallbacks=sum(1 for s in tracer.spans if s.get("fallback_occurred")),
+            policy_violations=sum(1 for s in tracer.spans if s.get("span_type") == "policy_violation"),
+            errors=sum(1 for s in tracer.spans if s.get("error")),
+        )
         raise
 
     json_result = RunState.model_validate(result).to_jsonable()
@@ -86,6 +99,20 @@ def main() -> None:
     )
     trace_json_path = write_trace_file(run_id=run_id, tracer=tracer)
     trace_md_path = write_trace_md(run_id=run_id, tracer=tracer)
+    state_store.update_run(
+        run_id=run_id,
+        final_status=json_result.get("final_status") or "failed",
+        final_summary=json_result.get("final_summary"),
+        finished_at=json_result.get("finished_at"),
+        retry_count=json_result.get("retry_count", 0),
+        escalated=json_result.get("escalated", False),
+        total_spans=len(tracer.spans),
+        model_calls=sum(1 for s in tracer.spans if s.get("span_type") == "model_call"),
+        tool_calls=sum(1 for s in tracer.spans if s.get("span_type") == "tool_call"),
+        fallbacks=sum(1 for s in tracer.spans if s.get("fallback_occurred")),
+        policy_violations=sum(1 for s in tracer.spans if s.get("span_type") == "policy_violation"),
+        errors=sum(1 for s in tracer.spans if s.get("error")),
+    )
 
     for path in json_result.get("execution", {}).get("artifacts_created", []):
         print(f"wrote artifact to {path}")

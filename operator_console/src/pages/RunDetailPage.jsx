@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import api from "../api";
 import Timeline from "./Timeline";
@@ -18,10 +18,28 @@ export default function RunDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
   const [activeTab, setActiveTab] = useState("Summary");
-  const [connStatus, setConnStatus] = useState(null); // null | "connecting" | "connected"
+  const [connStatus, setConnStatus] = useState(null); // null | "connecting" | "connected" | "reconnecting"
   const [runLoaded, setRunLoaded]   = useState(false);
   const [byteOffset, setByteOffset] = useState(0);
+  const wasConnected = useRef(false);
 
+  const fetchRunDetail = useCallback(() => {
+    Promise.all([
+      api.get(`/runs/${runId}`),
+      api.get(`/runs/${runId}/summary`),
+      api.get(`/runs/${runId}/spans`),
+    ])
+      .then(([runRes, summaryRes, spansRes]) => {
+        setRun(runRes.data);
+        setSummary(summaryRes.data);
+        setSpans(spansRes.data.spans || []);
+        setByteOffset(spansRes.data.byte_offset ?? 0);
+        setRunLoaded(true);
+      })
+      .catch((err) => setError(err.message));
+  }, [runId]);
+
+  // Initial load
   useEffect(() => {
     Promise.all([
       api.get(`/runs/${runId}`),
@@ -47,7 +65,13 @@ export default function RunDetailPage() {
     );
     setConnStatus("connecting");
 
-    es.onopen = () => setConnStatus("connected");
+    es.onopen = () => {
+      if (wasConnected.current) {
+        fetchRunDetail();
+      }
+      wasConnected.current = true;
+      setConnStatus("connected");
+    };
 
     es.addEventListener("span", (e) => {
       const span = JSON.parse(e.data);
@@ -82,11 +106,10 @@ export default function RunDetailPage() {
       es.close();
     });
 
-    // Don't close on error — let SSE auto-reconnect; show connecting state
-    es.onerror = () => setConnStatus("connecting");
+    es.onerror = () => setConnStatus(wasConnected.current ? "reconnecting" : "connecting");
 
-    return () => { es.close(); setConnStatus(null); };
-  }, [runId, runLoaded, byteOffset]);
+    return () => { es.close(); setConnStatus(null); wasConnected.current = false; };
+  }, [runId, runLoaded, byteOffset, fetchRunDetail]);
 
   if (loading) return <div style={{ padding: "24px" }}>Loading...</div>;
   if (error)   return <div style={{ padding: "24px", color: "red" }}>Error: {error}</div>;
@@ -131,18 +154,29 @@ export default function RunDetailPage() {
             borderRadius: "12px",
             fontSize: "12px",
             fontWeight: "bold",
-            background: connStatus === "connected" ? "#e8f5e9" : "#fff8e1",
-            color:      connStatus === "connected" ? "#2e7d32" : "#f57f17",
-            border:     `1px solid ${connStatus === "connected" ? "#2e7d3244" : "#f57f1744"}`,
+            background: connStatus === "connected" ? "#e8f5e9" : connStatus === "reconnecting" ? "#fce4ec" : "#fff8e1",
+            color:      connStatus === "connected" ? "#2e7d32" : connStatus === "reconnecting" ? "#c62828" : "#f57f17",
+            border:     `1px solid ${connStatus === "connected" ? "#2e7d3244" : connStatus === "reconnecting" ? "#c6282844" : "#f57f1744"}`,
             display: "inline-flex",
             alignItems: "center",
             gap: "5px",
           }}>
             <span className="live-dot">●</span>
-            {connStatus === "connected" ? "connected" : "connecting…"}
+            {connStatus === "connected" ? "connected" : connStatus === "reconnecting" ? "reconnecting…" : "connecting…"}
           </span>
         ) : null}
       </div>
+
+      {/* Stale data banner */}
+      {connStatus === "reconnecting" && (
+        <div style={{
+          margin: "12px 0", padding: "8px 14px", background: "#fff3e0",
+          border: "1px solid #ffe0b2", borderRadius: "6px",
+          fontSize: "13px", color: "#e65100",
+        }}>
+          Connection lost — data may be stale. Reconnecting…
+        </div>
+      )}
 
       {/* Drift warning banner */}
       {fallbacks.length > 0 && (

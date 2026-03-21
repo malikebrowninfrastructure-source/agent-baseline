@@ -68,6 +68,22 @@ def request_approval(
         payload=approval.model_dump(mode="json"),
     )
 
+    try:
+        from state_store import create_approval
+        task = state_snapshot.get("task") or {}
+        create_approval(
+            approval_id=approval.approval_id,
+            run_id=run_id,
+            checkpoint=checkpoint,
+            reason=reason,
+            requested_at=approval.requested_at,
+            task_title=task.get("title"),
+            task_risk=task.get("risk_level"),
+            task_objective=task.get("objective"),
+        )
+    except Exception:
+        pass  # DB unavailable — approval_request.json is the source of truth
+
     tracer = get_tracer()
     if tracer is not None:
         tracer.record_approval_request(

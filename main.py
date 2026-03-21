@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from tools import write_json_file
 from tools.trace_tools import write_trace_file, write_trace_md
 
+import state_store
 from workflows import build_graph
 from runtime import RunState
 from runtime.tracing import RunTracer, set_tracer
@@ -47,6 +48,16 @@ def main():
 		policy=policy,
 	)
 
+	state_store.init_db()
+	state_store.create_run(
+		run_id=initial_state.run_id,
+		task_id=task.task_id,
+		task_title=task.title,
+		task_risk=task.risk_level.value if task.risk_level else None,
+		current_stage=initial_state.current_stage.value,
+		started_at=initial_state.started_at,
+	)
+
 	enforcer = PolicyEnforcer(policy)
 	set_enforcer(enforcer)
 	enforce_approval(task=initial_state.task)
@@ -74,6 +85,18 @@ def main():
 			"final_status": "failed",
 			"final_summary": f"Policy violation: {exc}",
 		})
+		state_store.update_run(
+			run_id=initial_state.run_id,
+			final_status="failed",
+			final_summary=f"Policy violation: {exc}",
+			finished_at=None,
+			total_spans=len(tracer.spans),
+			model_calls=sum(1 for s in tracer.spans if s.get("span_type") == "model_call"),
+			tool_calls=sum(1 for s in tracer.spans if s.get("span_type") == "tool_call"),
+			fallbacks=sum(1 for s in tracer.spans if s.get("fallback_occurred")),
+			policy_violations=sum(1 for s in tracer.spans if s.get("span_type") == "policy_violation"),
+			errors=sum(1 for s in tracer.spans if s.get("error")),
+		)
 		raise
 
 	json_result = RunState.model_validate(result).to_jsonable()
@@ -84,6 +107,20 @@ def main():
 	)
 	trace_json_path = write_trace_file(run_id=initial_state.run_id, tracer=tracer)
 	trace_md_path = write_trace_md(run_id=initial_state.run_id, tracer=tracer)
+	state_store.update_run(
+		run_id=initial_state.run_id,
+		final_status=json_result.get("final_status") or "failed",
+		final_summary=json_result.get("final_summary"),
+		finished_at=json_result.get("finished_at"),
+		retry_count=json_result.get("retry_count", 0),
+		escalated=json_result.get("escalated", False),
+		total_spans=len(tracer.spans),
+		model_calls=sum(1 for s in tracer.spans if s.get("span_type") == "model_call"),
+		tool_calls=sum(1 for s in tracer.spans if s.get("span_type") == "tool_call"),
+		fallbacks=sum(1 for s in tracer.spans if s.get("fallback_occurred")),
+		policy_violations=sum(1 for s in tracer.spans if s.get("span_type") == "policy_violation"),
+		errors=sum(1 for s in tracer.spans if s.get("error")),
+	)
 
 	for path in json_result.get("execution", {}).get("artifacts_created", []):
 		print(f"wrote artifact to {path}")
