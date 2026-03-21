@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import requests
+from langsmith import traceable
 
 from config import ANTHROPIC_API_KEY, CLOUD_MODEL
 from models.base import BaseModelAdapter, ModelRequest
@@ -10,6 +11,7 @@ class CloudModelAdapter(BaseModelAdapter):
     def __init__(self, model_name: str | None = None):
         self.model_name = model_name or CLOUD_MODEL
 
+    @traceable(run_type="llm", name="anthropic_generate")
     def generate(self, request: ModelRequest) -> str:
         if not ANTHROPIC_API_KEY:
             return "[CLOUD MODEL FALLBACK] Missing ANTHROPIC_API_KEY"

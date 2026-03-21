@@ -3,6 +3,15 @@ from __future__ import annotations
 import os
 
 
+# --- LangSmith observability ---
+# Ensure a dedicated project name is set so all runs appear in the same
+# LangSmith project. Can be overridden by setting LANGCHAIN_PROJECT in .env.
+if not os.getenv("LANGCHAIN_PROJECT"):
+    os.environ["LANGCHAIN_PROJECT"] = "agent-baseline"
+
+LANGSMITH_PROJECT: str = os.environ["LANGCHAIN_PROJECT"]
+
+# --- Ollama / local model ---
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
 

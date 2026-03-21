@@ -3,6 +3,14 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import Optional, TYPE_CHECKING
 
+from langsmith import traceable
+
+
+@traceable(run_type="chain", name="policy_violation")
+def _emit_violation_event(violation_type: str, detail: str, context: str) -> dict:
+    """Emits a named LangSmith span for a policy violation before the run is halted."""
+    return {"violation_type": violation_type, "detail": detail, "context": context}
+
 if TYPE_CHECKING:
     from schemas.policy_schema import RunPolicy
     from schemas.task_schema import TaskSchema
@@ -126,6 +134,7 @@ class PolicyEnforcer:
                 detail=detail,
                 context=context,
             )
+        _emit_violation_event(violation_type=violation_type, detail=detail, context=context)
         raise PolicyViolationError(violation_type, detail)
 
 

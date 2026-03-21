@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import requests
+from langsmith import traceable
 
 from config import OLLAMA_HOST, OLLAMA_KEEP_ALIVE
 from models.base import BaseModelAdapter, ModelRequest
@@ -10,6 +11,7 @@ class LocalModelAdapter(BaseModelAdapter):
     def __init__(self, model_name: str):
         self.model_name = model_name
 
+    @traceable(run_type="llm", name="ollama_generate")
     def generate(self, request: ModelRequest) -> str:
         url = f"{OLLAMA_HOST}/api/generate"
 

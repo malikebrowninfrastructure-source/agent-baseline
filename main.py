@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv(override=True)
 from uuid import uuid4
+from datetime import datetime, timezone
 from tools import write_json_file
 from tools.trace_tools import write_trace_file, write_trace_md
 
@@ -39,7 +40,7 @@ def main():
 	)
 
 	initial_state = RunState(
-		run_id=f"run-{uuid4().hex[:8]}",
+		run_id=f"run-{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M')}-{uuid4().hex[:8]}",
 		current_stage=WorkflowStage.INTAKE,
 		task=task,
 		policy=policy,
