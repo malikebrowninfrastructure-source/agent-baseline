@@ -1,10 +1,11 @@
 import asyncio
 import json
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -29,6 +30,15 @@ app.add_middleware(
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 RUNS_DIR = PROJECT_ROOT / "outputs" / "runs"
+
+
+async def _run_resume(artifact_path: str) -> None:
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "resume.py", artifact_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    await proc.communicate()  # wait for completion; output goes to server logs
 
 
 def _load_spans(run_dir: Path) -> list:
@@ -164,7 +174,7 @@ def list_approvals():
 
 
 @app.post("/approvals/{run_id}/decide")
-async def decide_approval(run_id: str, body: dict = Body(...)):
+async def decide_approval(run_id: str, background_tasks: BackgroundTasks, body: dict = Body(...)):
     decision = body.get("decision")
     if decision not in ("approved", "rejected"):
         raise HTTPException(status_code=400, detail="decision must be 'approved' or 'rejected'")
@@ -193,25 +203,23 @@ async def decide_approval(run_id: str, body: dict = Body(...)):
         operator_note=data["operator_note"],
     )
 
-    final_status = "success" if decision == "approved" else "failed"
-    final_summary = (
-        "Approved by operator." if decision == "approved"
-        else f"Rejected by operator. Note: {data['operator_note'] or 'none'}"
-    )
-    state_store.update_run(
-        run_id=run_id,
-        final_status=final_status,
-        final_summary=final_summary,
-        finished_at=data["decided_at"],
-        retry_count=0,
-        escalated=False,
-        total_spans=0,
-        model_calls=0,
-        tool_calls=0,
-        fallbacks=0,
-        policy_violations=0,
-        errors=0,
-    )
+    if decision == "approved":
+        background_tasks.add_task(_run_resume, str(artifact))
+    else:  # rejected — terminal state, update DB now
+        state_store.update_run(
+            run_id=run_id,
+            final_status="failed",
+            final_summary=f"Rejected by operator. Note: {data['operator_note'] or 'none'}",
+            finished_at=data["decided_at"],
+            retry_count=0,
+            escalated=False,
+            total_spans=0,
+            model_calls=0,
+            tool_calls=0,
+            fallbacks=0,
+            policy_violations=0,
+            errors=0,
+        )
 
     return {"status": "ok", "decision": decision}
 
@@ -348,3 +356,14 @@ def get_run_artifacts(run_id: str):
 
     files = [item.name for item in run_dir.iterdir() if item.is_file()]
     return {"run_id": run_id, "artifacts": sorted(files)}
+
+
+@app.get("/runs/{run_id}/workflow")
+def get_run_workflow(run_id: str):
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Run not found")
+    wf_file = run_dir / "workflow_output.json"
+    if not wf_file.exists():
+        raise HTTPException(status_code=404, detail="workflow_output.json not found for this run")
+    return json.loads(wf_file.read_text(encoding="utf-8"))

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import warnings
+
 from langgraph.graph import StateGraph, START, END
 
 from agents_runtime import PlannerAgent, ExecutorAgent, VerifierAgent
+from agents_runtime.discovery_agent import DiscoveryAgent
 from runtime.realtime import write_live_status
 from runtime.state import RunState
 from runtime.logging import utc_now_iso, make_event
@@ -24,10 +27,43 @@ def plan_node(state: RunState) -> dict:
     }
 
 
+def discovery_node(state: RunState) -> dict:
+    if "discovery_tools" not in state.task.allowed_tools:
+        return {}
+
+    write_live_status(state.run_id, "discovery")
+    tracer = get_tracer()
+    events = list(state.events)
+
+    try:
+        discovery_results = DiscoveryAgent().run(task=state.task, run_id=state.run_id)
+        events.append(make_event("discovery", f"Discovery completed for {len(discovery_results)} host(s)"))
+        return {
+            "current_stage": WorkflowStage.DISCOVERY,
+            "discovery_results": discovery_results,
+            "events": events,
+        }
+    except Exception as exc:  # noqa: BLE001
+        warnings.warn(f"[{state.run_id}] discovery_node failed: {exc}", stacklevel=2)
+        events.append(make_event("discovery", f"Discovery failed (non-fatal): {exc}"))
+        return {
+            "current_stage": WorkflowStage.DISCOVERY,
+            "discovery_results": {},
+            "events": events,
+        }
+
+
 def approval_check_node(state: RunState) -> dict:
     write_live_status(state.run_id, "awaiting_approval")
     policy = state.policy
-    if policy is not None and policy.require_pre_execution_review and not policy.approved:
+    if policy is None:
+        warnings.warn(
+            f"[{state.run_id}] approval_check_node: policy is None — "
+            "approval gate is INACTIVE for this run.",
+            stacklevel=2,
+        )
+        return {}
+    if policy.require_pre_execution_review and not policy.approved:
         from runtime.approval import request_approval
         request_approval(
             run_id=state.run_id,
@@ -48,6 +84,7 @@ def execute_node(state: RunState) -> dict:
         task=state.task,
         plan=state.plan,
         run_id=state.run_id,
+        discovery_results=state.discovery_results,
     )
     events = list(state.events)
     events.append(make_event("execution", "Executor completed successfully"))
@@ -70,6 +107,7 @@ def verify_node(state: RunState) -> dict:
         task=state.task,
         plan=state.plan,
         execution=state.execution,
+        discovery_results=state.discovery_results,
     )
     events = list(state.events)
     events.append(
@@ -172,13 +210,15 @@ def build_graph():
     graph = StateGraph(RunState)
 
     graph.add_node("plan", plan_node)
+    graph.add_node("discovery", discovery_node)
     graph.add_node("approval_check", approval_check_node)
     graph.add_node("execute", execute_node)
     graph.add_node("verify", verify_node)
     graph.add_node("finalize", finalize_node)
 
     graph.add_edge(START, "plan")
-    graph.add_edge("plan", "approval_check")
+    graph.add_edge("plan", "discovery")
+    graph.add_edge("discovery", "approval_check")
     graph.add_edge("approval_check", "execute")
     graph.add_edge("execute", "verify")
     graph.add_edge("verify", "finalize")
